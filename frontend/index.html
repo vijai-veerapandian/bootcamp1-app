@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Bootcamp App</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="card">
+      <h1>Bootcamp App</h1>
+      <p class="subtle">
+        A tiny stateless web app. The page is static (nginx); the button calls
+        the backend API, which reports the pod that served the request.
+      </p>
+      <button id="call" class="btn">Call backend</button>
+      <pre id="out" class="out" aria-live="polite">Click the button to call /api/info…</pre>
+    </main>
+    <script src="app.js"></script>
+  </body>
+</html>

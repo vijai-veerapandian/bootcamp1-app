@@ -1,0 +1,110 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# OIDC: lets us assume an IAM role in AWS without long-lived secrets.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  ECR_NAMESPACE: bootcamp1-app
+
+jobs:
+  backend-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r backend/requirements-dev.txt
+      - run: pytest -q
+        working-directory: backend
+
+  # The frontend is a static site (no build step). Just sanity-check the image
+  # builds so a broken Dockerfile fails CI before we try to publish.
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+
+  # Only push images on main. Pull requests stop after the test/build jobs above.
+  publish:
+    needs: [backend-test, frontend-build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & push ${{ matrix.component }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.component }}:${{ github.sha }}
+            ${{ steps.ecr.outputs.registry }}/${{ env.ECR_NAMESPACE }}/${{ matrix.component }}:latest
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+  # GitOps handoff: after images are pushed, bump the image tag in the infra
+  # repo's Helm values so ArgoCD rolls out the new build. This is the only place
+  # the app repo touches the infra repo.
+  #
+  # Disabled by default so CI stays green out of the box. To enable:
+  #   1. Create a repo VARIABLE  GITOPS_ENABLED = true
+  #   2. Create a repo SECRET    GITOPS_TOKEN   = a PAT / fine-grained token with
+  #      `contents:write` on the bootcamp1-infra repo
+  #   3. GITOPS_REPO is set below to vijai-veerapandian/bootcamp1-infra
+  update-gitops:
+    needs: [publish]
+    if: github.ref == 'refs/heads/main' && vars.GITOPS_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GITOPS_REPO: vijai-veerapandian/bootcamp1-infra
+      VALUES_PATH: helm/bootcamp1-app/values.yaml
+    steps:
+      - name: Checkout infra repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+
+      - name: Bump image tags to this commit
+        run: |
+          sed -i -E "s/(tag:).*/\1 ${GITHUB_SHA}/" "$VALUES_PATH"
+          git config user.name  "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git add "$VALUES_PATH"
+          git commit -m "deploy: bootcamp1-app images ${GITHUB_SHA}" || echo "no change"
+          git push
