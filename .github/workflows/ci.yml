@@ -77,21 +77,18 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
-  # GitOps handoff: after images are pushed, bump the image tag in the infra
-  # repo's Helm values so ArgoCD rolls out the new build. This is the only place
-  # the app repo touches the infra repo.
+  # GitOps handoff: after the images are pushed, pin the Helm values in the
+  # infra repo to this commit's SHA so ArgoCD rolls out the new build. This is
+  # the only place the app repo writes to the infra repo.
   #
-  # Disabled by default so CI stays green out of the box. To enable:
-  #   1. Create a repo VARIABLE  GITOPS_ENABLED = true
-  #   2. Create a repo SECRET    GITOPS_TOKEN   = a PAT / fine-grained token with
-  #      `contents:write` on the bootcamp1-infra repo
-  #   3. GITOPS_REPO is set below to vijai-veerapandian/bootcamp1-infra
+  # Requires repo SECRET  GITOPS_TOKEN = a fine-grained PAT with
+  # Contents: Read AND Write on vijai-veerapandian/bootcamp1-infra.
   update-gitops:
     needs: [publish]
-    if: github.ref == 'refs/heads/main' && vars.GITOPS_ENABLED == 'true'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
-      GITOPS_REPO: vijai-veerapandian/bootcamp1-infra
+      GITOPS_REPO: vijai-veerapandian/bootcamp-w2
       VALUES_PATH: helm/bootcamp1-app/values.yaml
     steps:
       - name: Checkout infra repo
@@ -100,11 +97,14 @@ jobs:
           repository: ${{ env.GITOPS_REPO }}
           token: ${{ secrets.GITOPS_TOKEN }}
 
-      - name: Bump image tags to this commit
+      - name: Pin image tags to ${{ github.sha }}
+        env:
+          TAG: ${{ github.sha }}
         run: |
-          sed -i -E "s/(tag:).*/\1 ${GITHUB_SHA}/" "$VALUES_PATH"
-          git config user.name  "ci-bot"
-          git config user.email "ci-bot@users.noreply.github.com"
+          # yq is pre-installed on ubuntu-latest. Set both image tags precisely.
+          yq -i '.image.backend.tag = strenv(TAG) | .image.frontend.tag = strenv(TAG)' "$VALUES_PATH"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$VALUES_PATH"
-          git commit -m "deploy: bootcamp1-app images ${GITHUB_SHA}" || echo "no change"
+          git commit -m "deploy: bootcamp1-app @ ${TAG}" || { echo "no change to commit"; exit 0; }
           git push
