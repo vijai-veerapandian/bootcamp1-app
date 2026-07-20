@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata: { name: frontend, namespace: bootcamp1-app }
+spec: 
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector: { matchLabels: { app: frontend } }
+  strategy:
+    canary:
+      steps:
+        - setWeight: 25
+        - pause: {}
+        - setWeight: 50
+        - pause: { duration: 20s }
+  template:
+    metadata: { labels: { app: frontend } }
+    spec:
+      containers:
+        - name: frontend
+          image: 840577818615.dkr.ecr.us-east-1.amazonaws.com/bootcamp1-app-frontend:latest
+          ports: [{ containerPort: 8080 }]
+          readinessProbe:
+            httpGet: { path: /, port: 8080 }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: frontend, namespace: bootcamp1-app }
+spec: 
+  selector: { app: frontend }
+  ports: [{ port: 8080, targetPort: 8080 }]
